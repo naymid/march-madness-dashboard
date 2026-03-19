@@ -2,9 +2,14 @@
 Win probability engine for 2026 NCAA Tournament — full 64-team bracket.
 Uses Log5 formula with KenPom-proxy AdjEM ratings, injury adjustments,
 consistency factors, and head-to-head neutral-site research.
+
+Bracket simulation uses PREDICTED_RESULTS (research-based) to advance teams
+through rounds, while computing model win probabilities for every game.
+This means the predicted Final Four is Arizona/Michigan/Duke/Houston — which
+is OUR PREDICTION based on pre-tournament research, not confirmed results.
 """
 import math
-from bracket_data import TEAM_DATA, get_r64_matchups, PREDICTED_RESULTS, REGION_ORDER, CONFIRMED_FINAL_FOUR
+from bracket_data import TEAM_DATA, get_r64_matchups, PREDICTED_RESULTS, REGION_ORDER
 
 # ─── Head-to-head neutral-site adjustments ────────────────────────────────────
 H2H = {
@@ -18,7 +23,7 @@ H2H = {
     ("Duke", "Houston"):     -1.2,
 }
 
-# ─── Core math ────────────────────────────────────────────────────────────────
+
 def log5(pa: float, pb: float) -> float:
     denom = pa + pb - 2 * pa * pb
     return (pa - pa * pb) / denom if denom else 0.5
@@ -40,12 +45,10 @@ def win_probability(team_a: str, team_b: str) -> dict:
     pa = 1 / (1 + math.exp(-a_em / 10))
     pb = 1 / (1 + math.exp(-b_em / 10))
 
-    # Consistency penalty for high-stakes games
     penalties = {"Strong": 0.0, "Streaky": -0.015, "Suspect": -0.03}
     pa += penalties.get(a["consistency"], 0)
     pb += penalties.get(b["consistency"], 0)
 
-    # Kill Shot factor
     ks = (a["kill_shot_pct"] - b["kill_shot_pct"]) * 0.05
     pa += ks
     pb -= ks
@@ -122,11 +125,28 @@ def parlay_ev(legs: list[dict]) -> dict:
     }
 
 
-# ─── Full bracket simulation ──────────────────────────────────────────────────
+# ─── Research-driven bracket simulation ──────────────────────────────────────
+def _research_winner(region: str, round_key: str, team_a: str, team_b: str) -> str:
+    """
+    Use PREDICTED_RESULTS (research-based) to pick the winner when available.
+    Falls back to model win probability if not in research predictions.
+    """
+    research = PREDICTED_RESULTS.get(region, {}).get(round_key, {})
+    if research.get(team_a) == "W":
+        return team_a
+    if research.get(team_b) == "W":
+        return team_b
+    # Fallback: use model
+    wp = win_probability(team_a, team_b)
+    return team_a if wp["win_prob_a"] >= 0.5 else team_b
+
+
 def simulate_region(region: str) -> dict:
     """
-    Simulate all rounds of a region using model win probabilities.
-    Returns round-by-round matchups with win probabilities and predicted winners.
+    Simulate all rounds of a region.
+    Win probabilities computed by model; advancement driven by research predictions.
+    This ensures our predicted upsets (Akron over Texas Tech, Michigan over Alabama, etc.)
+    are reflected in the bracket path.
     """
     r64 = get_r64_matchups(region)
     rounds = {"R64": [], "R32": [], "S16": [], "E8": []}
@@ -135,9 +155,7 @@ def simulate_region(region: str) -> dict:
     r32_field = []
     for team_a, team_b in r64:
         wp = win_probability(team_a, team_b)
-        predicted_winner = team_a if wp["win_prob_a"] >= 0.5 else team_b
-        predicted_loser = team_b if wp["win_prob_a"] >= 0.5 else team_a
-        win_prob = max(wp["win_prob_a"], wp["win_prob_b"])
+        predicted_winner = _research_winner(region, "R64", team_a, team_b)
         rounds["R64"].append({
             "team_a": team_a,
             "team_b": team_b,
@@ -147,30 +165,26 @@ def simulate_region(region: str) -> dict:
             "win_prob_b": wp["win_prob_b"],
             "projected_spread": wp["projected_spread"],
             "predicted_winner": predicted_winner,
-            "win_prob_winner": round(win_prob, 4),
+            "is_upset": TEAM_DATA[predicted_winner]["seed"] > min(wp["seed_a"], wp["seed_b"]),
             "injuries_a": TEAM_DATA[team_a]["injuries"],
             "injuries_b": TEAM_DATA[team_b]["injuries"],
         })
         r32_field.append(predicted_winner)
 
-    # R32 — winners of adjacent R64 games meet
+    # R32
     s16_field = []
     for i in range(0, len(r32_field), 2):
         if i + 1 < len(r32_field):
             team_a, team_b = r32_field[i], r32_field[i + 1]
             wp = win_probability(team_a, team_b)
-            predicted_winner = team_a if wp["win_prob_a"] >= 0.5 else team_b
-            win_prob = max(wp["win_prob_a"], wp["win_prob_b"])
+            predicted_winner = _research_winner(region, "R32", team_a, team_b)
             rounds["R32"].append({
-                "team_a": team_a,
-                "team_b": team_b,
-                "seed_a": wp["seed_a"],
-                "seed_b": wp["seed_b"],
-                "win_prob_a": wp["win_prob_a"],
-                "win_prob_b": wp["win_prob_b"],
+                "team_a": team_a, "team_b": team_b,
+                "seed_a": wp["seed_a"], "seed_b": wp["seed_b"],
+                "win_prob_a": wp["win_prob_a"], "win_prob_b": wp["win_prob_b"],
                 "projected_spread": wp["projected_spread"],
                 "predicted_winner": predicted_winner,
-                "win_prob_winner": round(win_prob, 4),
+                "is_upset": TEAM_DATA[predicted_winner]["seed"] > min(wp["seed_a"], wp["seed_b"]),
             })
             s16_field.append(predicted_winner)
 
@@ -180,18 +194,14 @@ def simulate_region(region: str) -> dict:
         if i + 1 < len(s16_field):
             team_a, team_b = s16_field[i], s16_field[i + 1]
             wp = win_probability(team_a, team_b)
-            predicted_winner = team_a if wp["win_prob_a"] >= 0.5 else team_b
-            win_prob = max(wp["win_prob_a"], wp["win_prob_b"])
+            predicted_winner = _research_winner(region, "S16", team_a, team_b)
             rounds["S16"].append({
-                "team_a": team_a,
-                "team_b": team_b,
-                "seed_a": wp["seed_a"],
-                "seed_b": wp["seed_b"],
-                "win_prob_a": wp["win_prob_a"],
-                "win_prob_b": wp["win_prob_b"],
+                "team_a": team_a, "team_b": team_b,
+                "seed_a": wp["seed_a"], "seed_b": wp["seed_b"],
+                "win_prob_a": wp["win_prob_a"], "win_prob_b": wp["win_prob_b"],
                 "projected_spread": wp["projected_spread"],
                 "predicted_winner": predicted_winner,
-                "win_prob_winner": round(win_prob, 4),
+                "is_upset": TEAM_DATA[predicted_winner]["seed"] > min(wp["seed_a"], wp["seed_b"]),
             })
             e8_field.append(predicted_winner)
 
@@ -199,18 +209,14 @@ def simulate_region(region: str) -> dict:
     if len(e8_field) >= 2:
         team_a, team_b = e8_field[0], e8_field[1]
         wp = win_probability(team_a, team_b)
-        predicted_winner = team_a if wp["win_prob_a"] >= 0.5 else team_b
-        win_prob = max(wp["win_prob_a"], wp["win_prob_b"])
+        predicted_winner = _research_winner(region, "E8", team_a, team_b)
         rounds["E8"].append({
-            "team_a": team_a,
-            "team_b": team_b,
-            "seed_a": wp["seed_a"],
-            "seed_b": wp["seed_b"],
-            "win_prob_a": wp["win_prob_a"],
-            "win_prob_b": wp["win_prob_b"],
+            "team_a": team_a, "team_b": team_b,
+            "seed_a": wp["seed_a"], "seed_b": wp["seed_b"],
+            "win_prob_a": wp["win_prob_a"], "win_prob_b": wp["win_prob_b"],
             "projected_spread": wp["projected_spread"],
             "predicted_winner": predicted_winner,
-            "win_prob_winner": round(win_prob, 4),
+            "is_upset": TEAM_DATA[predicted_winner]["seed"] > min(wp["seed_a"], wp["seed_b"]),
         })
 
     return {
@@ -222,49 +228,36 @@ def simulate_region(region: str) -> dict:
 
 def simulate_full_bracket() -> dict:
     """
-    Run full bracket simulation — all regions + confirmed Final Four + Championship.
-    Regions simulate from R64 using the model.
-    Final Four uses CONFIRMED teams (Arizona/Michigan, Duke/Houston).
+    Full bracket simulation — all regions + predicted Final Four + Championship.
+    All predictions are MODEL/RESEARCH-BASED, not confirmed results.
+    Regional champions feed into Final Four matchups.
+    East vs South (Semifinal 1), West vs Midwest (Semifinal 2).
     """
     regions = {}
-
     for region in REGION_ORDER:
-        sim = simulate_region(region)
-        regions[region] = sim
+        regions[region] = simulate_region(region)
 
-    # Use confirmed Final Four teams, not simulated (model may differ due to upsets)
-    cf = CONFIRMED_FINAL_FOUR
-    semi1_a = cf["Semifinal_1"]["team_a"]
-    semi1_b = cf["Semifinal_1"]["team_b"]
-    semi2_a = cf["Semifinal_2"]["team_a"]
-    semi2_b = cf["Semifinal_2"]["team_b"]
+    # Final Four: East champ vs South champ, West champ vs Midwest champ
+    semi1_a = regions["East"]["predicted_champion"]
+    semi1_b = regions["South"]["predicted_champion"]
+    semi2_a = regions["West"]["predicted_champion"]
+    semi2_b = regions["Midwest"]["predicted_champion"]
 
     ff = {}
     champ_field = []
 
-    if semi1_a and semi1_b:
-        wp = win_probability(semi1_a, semi1_b)
-        winner = semi1_a if wp["win_prob_a"] >= 0.5 else semi1_b
-        ff["Semifinal_1"] = {
-            "team_a": semi1_a, "team_b": semi1_b,
-            "seed_a": wp["seed_a"], "seed_b": wp["seed_b"],
-            "win_prob_a": wp["win_prob_a"], "win_prob_b": wp["win_prob_b"],
-            "projected_spread": wp["projected_spread"],
-            "predicted_winner": winner,
-        }
-        champ_field.append(winner)
-
-    if semi2_a and semi2_b:
-        wp = win_probability(semi2_a, semi2_b)
-        winner = semi2_a if wp["win_prob_a"] >= 0.5 else semi2_b
-        ff["Semifinal_2"] = {
-            "team_a": semi2_a, "team_b": semi2_b,
-            "seed_a": wp["seed_a"], "seed_b": wp["seed_b"],
-            "win_prob_a": wp["win_prob_a"], "win_prob_b": wp["win_prob_b"],
-            "projected_spread": wp["projected_spread"],
-            "predicted_winner": winner,
-        }
-        champ_field.append(winner)
+    for label, ta, tb in [("Semifinal_1", semi1_a, semi1_b), ("Semifinal_2", semi2_a, semi2_b)]:
+        if ta and tb:
+            wp = win_probability(ta, tb)
+            winner = ta if wp["win_prob_a"] >= 0.5 else tb
+            ff[label] = {
+                "team_a": ta, "team_b": tb,
+                "seed_a": wp["seed_a"], "seed_b": wp["seed_b"],
+                "win_prob_a": wp["win_prob_a"], "win_prob_b": wp["win_prob_b"],
+                "projected_spread": wp["projected_spread"],
+                "predicted_winner": winner,
+            }
+            champ_field.append(winner)
 
     championship = {}
     if len(champ_field) == 2:
@@ -289,30 +282,11 @@ def simulate_full_bracket() -> dict:
 
 def championship_probabilities() -> dict:
     """
-    Championship probability using CONFIRMED Final Four teams.
-    Overrides pure simulation with user-validated bracket results.
+    Championship probability for all four predicted Final Four teams.
+    Driven by the research-based bracket simulation.
     """
-    # Use confirmed Final Four, not simulated one
-    cf = CONFIRMED_FINAL_FOUR
-    s1_a = cf["Semifinal_1"]["team_a"]
-    s1_b = cf["Semifinal_1"]["team_b"]
-    s2_a = cf["Semifinal_2"]["team_a"]
-    s2_b = cf["Semifinal_2"]["team_b"]
-
-    wp1 = win_probability(s1_a, s1_b)
-    wp2 = win_probability(s2_a, s2_b)
-
-    # Build s1, s2 dicts matching simulate_full_bracket format
-    s1 = {**wp1, "team_a": s1_a, "team_b": s1_b,
-          "seed_a": TEAM_DATA[s1_a]["seed"], "seed_b": TEAM_DATA[s1_b]["seed"]}
-    s2 = {**wp2, "team_a": s2_a, "team_b": s2_b,
-          "seed_a": TEAM_DATA[s2_a]["seed"], "seed_b": TEAM_DATA[s2_b]["seed"]}
-
-    # Legacy path uses s1/s2
-    ff = {"Semifinal_1": s1, "Semifinal_2": s2}
-    sim = {"final_four": ff}
-
-    # Get FF teams — now using confirmed teams
+    sim = simulate_full_bracket()
+    ff = sim["final_four"]
     s1 = ff.get("Semifinal_1", {})
     s2 = ff.get("Semifinal_2", {})
 
@@ -320,33 +294,26 @@ def championship_probabilities() -> dict:
     mi = s1.get("team_b")
     du = s2.get("team_a")
     hu = s2.get("team_b")
-
     if not all([az, mi, du, hu]):
         return {}
 
-    az_to_final = s1["win_prob_a"]
-    mi_to_final = s1["win_prob_b"]
-    du_to_final = s2["win_prob_a"]
-    hu_to_final = s2["win_prob_b"]
+    az_to_f = s1["win_prob_a"]; mi_to_f = s1["win_prob_b"]
+    du_to_f = s2["win_prob_a"]; hu_to_f = s2["win_prob_b"]
 
-    # All championship matchups
-    az_du = win_probability(az, du)
-    az_hu = win_probability(az, hu)
-    mi_du = win_probability(mi, du)
-    mi_hu = win_probability(mi, hu)
+    az_du = win_probability(az, du); az_hu = win_probability(az, hu)
+    mi_du = win_probability(mi, du); mi_hu = win_probability(mi, hu)
 
-    az_champ = az_to_final * (az_du["win_prob_a"] * du_to_final + az_hu["win_prob_a"] * hu_to_final)
-    mi_champ = mi_to_final * (mi_du["win_prob_a"] * du_to_final + mi_hu["win_prob_a"] * hu_to_final)
-    du_champ = du_to_final * (az_du["win_prob_b"] * az_to_final + mi_du["win_prob_b"] * mi_to_final)
-    hu_champ = hu_to_final * (az_hu["win_prob_b"] * az_to_final + mi_hu["win_prob_b"] * mi_to_final)
+    az_c = az_to_f * (az_du["win_prob_a"] * du_to_f + az_hu["win_prob_a"] * hu_to_f)
+    mi_c = mi_to_f * (mi_du["win_prob_a"] * du_to_f + mi_hu["win_prob_a"] * hu_to_f)
+    du_c = du_to_f * (az_du["win_prob_b"] * az_to_f + mi_du["win_prob_b"] * mi_to_f)
+    hu_c = hu_to_f * (az_hu["win_prob_b"] * az_to_f + mi_hu["win_prob_b"] * mi_to_f)
 
-    total = az_champ + mi_champ + du_champ + hu_champ or 1
-
+    total = (az_c + mi_c + du_c + hu_c) or 1
     return {
-        az: round(az_champ / total, 4),
-        mi: round(mi_champ / total, 4),
-        du: round(du_champ / total, 4),
-        hu: round(hu_champ / total, 4),
+        az: round(az_c / total, 4),
+        mi: round(mi_c / total, 4),
+        du: round(du_c / total, 4),
+        hu: round(hu_c / total, 4),
         "semi1": s1,
         "semi2": s2,
     }

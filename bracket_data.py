@@ -265,13 +265,6 @@ def get_r64_matchups(region: str) -> list[tuple[str, str]]:
     return matchups
 
 
-# ─── Confirmed Final Four (user-validated from tournament play) ───────────────
-CONFIRMED_FINAL_FOUR = {
-    "Semifinal_1": {"team_a": "Arizona", "team_b": "Michigan", "region_a": "East", "region_b": "South"},
-    "Semifinal_2": {"team_a": "Duke",    "team_b": "Houston",  "region_a": "West",  "region_b": "Midwest"},
-}
-
-
 def get_predicted_bracket_path() -> dict:
     """Return the full predicted tournament bracket from pre-research."""
     result = {}
