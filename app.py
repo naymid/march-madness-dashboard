@@ -1,7 +1,6 @@
 """
 2026 NCAA March Madness Dashboard — FastAPI backend
-Serves REST API + static frontend dashboard
-Auto-updates via APScheduler background jobs
+Full 64-team bracket, round-by-round predictions, live odds, +EV alerts.
 """
 import asyncio
 import logging
@@ -17,18 +16,38 @@ from fastapi.middleware.cors import CORSMiddleware
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 from data_fetcher import fetch_all_data, get_known_injuries, get_demo_odds
+from bracket_data import (
+    TEAM_DATA, REGION_ORDER, ROUND_INFO, NOTABLE_UPSETS,
+    get_r64_matchups, get_predicted_bracket_path, get_teams_by_region
+)
 from probability_engine import (
-    TEAMS,
-    win_probability,
-    championship_probabilities,
-    ev_calculation,
-    parlay_ev,
-    apply_result_update,
-    add_injury,
+    win_probability, championship_probabilities,
+    simulate_full_bracket, ev_calculation, parlay_ev, add_injury
 )
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# ─── In-Memory State ──────────────────────────────────────────────────────────
+state = {
+    "scores": {"games": []},
+    "injuries": get_known_injuries(),
+    "odds": get_demo_odds(),
+    "probabilities": {},
+    "bracket_sim": {},
+    "ev_opportunities": [],
+    "parlays": [],
+    "last_updated": datetime.utcnow().isoformat(),
+    "update_count": 0,
+    "alerts": [],
+    "results": {
+        "East": {}, "South": {}, "West": {}, "Midwest": {},
+        "Final Four": {}, "Championship": {}
+    },
+}
+
+scheduler = AsyncIOScheduler()
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -40,331 +59,308 @@ async def lifespan(app: FastAPI):
     scheduler.shutdown()
 
 
-app = FastAPI(title="March Madness 2026 Dashboard", version="1.0.0", lifespan=lifespan)
-
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# ─── In-Memory State ──────────────────────────────────────────────────────────
-state = {
-    "scores": {"games": []},
-    "injuries": get_known_injuries(),
-    "odds": get_demo_odds(),
-    "probabilities": {},
-    "ev_opportunities": [],
-    "parlays": [],
-    "last_updated": datetime.utcnow().isoformat(),
-    "update_count": 0,
-    "alerts": [],
-}
-
-scheduler = AsyncIOScheduler()
+app = FastAPI(title="2026 March Madness Dashboard", version="2.0.0", lifespan=lifespan)
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
-# ─── Background Update Job ────────────────────────────────────────────────────
+# ─── Background Update ────────────────────────────────────────────────────────
 async def update_all_data():
-    """Scheduled job: refresh all data and recalculate model."""
     global state
     try:
         logger.info("Updating data...")
         data = await fetch_all_data()
-
         state["scores"] = data["scores"]
         state["last_updated"] = data["fetched_at"]
         state["update_count"] += 1
-
-        # Update injuries from live feed
         if data["injuries"]:
             state["injuries"] = data["injuries"]
-
-        # Update odds
         state["odds"] = data["odds"]
-
-        # Recalculate probabilities
+        state["bracket_sim"] = simulate_full_bracket()
         state["probabilities"] = championship_probabilities()
-
-        # Recalculate EV opportunities
         state["ev_opportunities"] = calculate_ev_opportunities(data["odds"])
-
-        # Generate parlay suggestions
         state["parlays"] = generate_parlays(state["ev_opportunities"])
-
-        # Check for new results and update model
-        check_for_upsets(data["scores"])
-
-        # Generate alerts
         state["alerts"] = generate_alerts(state["ev_opportunities"], state["injuries"])
-
         logger.info(f"Update #{state['update_count']} complete. EV opps: {len(state['ev_opportunities'])}")
     except Exception as e:
         logger.error(f"Update failed: {e}", exc_info=True)
 
 
-def calculate_ev_opportunities(odds_data: dict) -> list[dict]:
-    """Compare model probabilities against market odds to find +EV bets."""
-    opportunities = []
-    probs = championship_probabilities()
-
-    semifinal_probs = {
-        "Arizona": probs["semi1"]["win_prob_a"],
-        "Michigan": probs["semi1"]["win_prob_b"],
-        "Duke": probs["semi2"]["win_prob_a"],
-        "Houston": probs["semi2"]["win_prob_b"],
-    }
-    champ_probs = {k: v for k, v in probs.items() if k not in ("semi1", "semi2")}
-
+# ─── EV / Parlay Logic ───────────────────────────────────────────────────────
+def _get_ml_for_team(odds_data: dict, team: str) -> Optional[int]:
     for event in odds_data.get("events", []):
-        home = event.get("home", "")
-        away = event.get("away", "")
-        best = event.get("best_lines", {})
-        is_champ = event.get("championship", False)
+        h2h = event.get("best_lines", {}).get("h2h", {})
+        if team in h2h:
+            return h2h[team]
+    return None
 
-        for team in [home, away]:
-            if team in ("TBD",):
-                continue
-            # Moneyline
-            ml_odds = best.get("h2h", {}).get(team)
-            if ml_odds is not None:
-                # Semi final prob
-                if is_champ:
-                    model_prob = champ_probs.get(team, 0)
-                    bet_type = "Championship ML"
-                else:
-                    model_prob = semifinal_probs.get(team, 0)
-                    bet_type = "Semifinal ML"
 
-                if model_prob > 0:
-                    ev = ev_calculation(model_prob, ml_odds)
-                    if ev["is_positive_ev"]:
-                        opportunities.append({
-                            "team": team,
-                            "opponent": away if team == home else home,
-                            "bet_type": bet_type,
-                            "odds": ml_odds,
-                            "model_prob": round(model_prob, 4),
-                            "implied_prob": ev["implied_prob"],
-                            "edge": round(ev["edge"], 4),
-                            "ev_per_dollar": ev["ev_per_dollar"],
-                            "kelly_pct": ev["kelly_pct"],
-                            "rating": "STRONG" if ev["edge"] > 0.10 else "MODERATE",
-                        })
+def calculate_ev_opportunities(odds_data: dict) -> list[dict]:
+    opps = []
+    sim = state.get("bracket_sim", {})
+    ff = sim.get("final_four", {})
+    champ = sim.get("championship", {})
 
-            # Spread
-            spread_odds = best.get("spread", {}).get(team)
-            if spread_odds and not is_champ:
-                spread_val = spread_odds if isinstance(spread_odds, (int, float)) else -110
-                model_spread = win_probability(home, away)["projected_spread"] if team == home else -win_probability(home, away)["projected_spread"]
-                market_spread = event.get("best_lines", {}).get("spread", {})
-                # Get the line value (not the juice)
-                line_val = None
-                for k, v in market_spread.items():
-                    if k == team:
-                        line_val = v
+    # Final Four lines from odds feed
+    for semi_key, game in ff.items():
+        for team, prob, opp in [
+            (game["team_a"], game["win_prob_a"], game["team_b"]),
+            (game["team_b"], game["win_prob_b"], game["team_a"]),
+        ]:
+            ml = _get_ml_for_team(odds_data, team)
+            if ml is not None:
+                ev = ev_calculation(prob, ml)
+                if ev["is_positive_ev"]:
+                    opps.append({
+                        "team": team, "opponent": opp,
+                        "bet_type": f"{semi_key.replace('_', ' ')} ML",
+                        "round": "Final Four", "odds": ml,
+                        "model_prob": round(prob, 4),
+                        "implied_prob": ev["implied_prob"],
+                        "edge": round(ev["edge"], 4),
+                        "ev_per_dollar": ev["ev_per_dollar"],
+                        "kelly_pct": ev["kelly_pct"],
+                        "rating": "STRONG" if ev["edge"] > 0.10 else "MODERATE",
+                    })
 
-                if line_val is not None and isinstance(line_val, (int, float)):
-                    # Favorable spread if model thinks team covers by margin
-                    if (team == home and model_spread < line_val - 1.5) or \
-                       (team == away and model_spread > line_val + 1.5):
-                        ev = ev_calculation(0.54, -110)  # Slight edge on spread
-                        opportunities.append({
-                            "team": team,
-                            "opponent": away if team == home else home,
-                            "bet_type": f"Spread ({'+' if line_val > 0 else ''}{line_val})",
-                            "odds": -110,
-                            "model_prob": 0.54,
-                            "implied_prob": 0.524,
-                            "edge": 0.016,
-                            "ev_per_dollar": ev["ev_per_dollar"],
-                            "kelly_pct": ev["kelly_pct"],
-                            "rating": "MODERATE",
-                        })
+    # Championship lines
+    if champ and champ.get("team_a"):
+        for team, prob, opp in [
+            (champ["team_a"], champ.get("win_prob_a", 0), champ["team_b"]),
+            (champ["team_b"], champ.get("win_prob_b", 0), champ["team_a"]),
+        ]:
+            ml = _get_ml_for_team(odds_data, team)
+            if ml is not None:
+                ev = ev_calculation(prob, ml)
+                if ev["is_positive_ev"]:
+                    opps.append({
+                        "team": team, "opponent": opp,
+                        "bet_type": "Championship ML",
+                        "round": "Championship", "odds": ml,
+                        "model_prob": round(prob, 4),
+                        "implied_prob": ev["implied_prob"],
+                        "edge": round(ev["edge"], 4),
+                        "ev_per_dollar": ev["ev_per_dollar"],
+                        "kelly_pct": ev["kelly_pct"],
+                        "rating": "STRONG" if ev["edge"] > 0.10 else "MODERATE",
+                    })
 
-    # Sort by edge descending
-    opportunities.sort(key=lambda x: x["edge"], reverse=True)
-    return opportunities
+    # R64 — scan all matchups for significant line value
+    for region in REGION_ORDER:
+        for team_a, team_b in get_r64_matchups(region):
+            wp = win_probability(team_a, team_b)
+            spread = wp.get("projected_spread", 0)
+            if abs(spread) > 8:
+                fav = team_a if wp["win_prob_a"] > 0.5 else team_b
+                fav_prob = max(wp["win_prob_a"], wp["win_prob_b"])
+                dog_prob = 1 - fav_prob
+                dog = team_b if fav == team_a else team_a
+                # Check dog value — heavy favs often slightly over-priced
+                approx_dog_odds = int((1 - dog_prob) / dog_prob * 100)
+                ev = ev_calculation(dog_prob, approx_dog_odds)
+                if ev["is_positive_ev"] and ev["edge"] > 0.03:
+                    opps.append({
+                        "team": dog, "opponent": fav,
+                        "bet_type": f"R64 Upset ML (proj {fav} -{abs(spread):.0f})",
+                        "round": "Round of 64", "odds": approx_dog_odds,
+                        "model_prob": round(dog_prob, 4),
+                        "implied_prob": ev["implied_prob"],
+                        "edge": round(ev["edge"], 4),
+                        "ev_per_dollar": ev["ev_per_dollar"],
+                        "kelly_pct": ev["kelly_pct"],
+                        "rating": "MODERATE",
+                    })
+
+    opps.sort(key=lambda x: x["edge"], reverse=True)
+    return opps[:20]
 
 
 def generate_parlays(ev_opps: list[dict]) -> list[dict]:
-    """Generate suggested parlays from positive-EV legs."""
-    probs = championship_probabilities()
+    sim = state.get("bracket_sim", {})
+    ff = sim.get("final_four", {})
+    if not ff:
+        return []
 
-    # Pre-built research parlays
+    s1 = ff.get("Semifinal_1", {})
+    s2 = ff.get("Semifinal_2", {})
     parlays = []
 
-    # Parlay 1: Arizona Final Four win + Houston Final Four win
-    az_sf_prob = probs["semi1"]["win_prob_a"]
-    hu_sf_prob = probs["semi2"]["win_prob_b"]
+    az = s1.get("team_a", "Arizona")
+    mi = s1.get("team_b", "Michigan")
+    du = s2.get("team_a", "Duke")
+    hu = s2.get("team_b", "Houston")
+    az_prob = s1.get("win_prob_a", 0.82)
+    hu_prob = s2.get("win_prob_b", 0.56)
+    az_champ = state.get("probabilities", {}).get(az, 0.54)
 
     p1 = parlay_ev([
-        {"team": "Arizona", "label": "Arizona beats Michigan (SF)", "odds": -300, "win_prob": az_sf_prob},
-        {"team": "Houston", "label": "Houston beats Duke (SF)", "odds": 155, "win_prob": hu_sf_prob},
+        {"team": hu, "label": f"{hu} ML (+155 demo)", "odds": 155, "win_prob": hu_prob},
+        {"team": "Under", "label": f"{du} vs {hu} Under 138.5", "odds": -110, "win_prob": 0.58},
     ])
-    p1["name"] = "Value Parlay: AZ + HOU Final Four"
-    p1["rationale"] = "Arizona strong favorite; Houston +EV underdog. If both advance, AZ-HOU final is wild."
+    p1["name"] = f"{hu} Game Parlay"
+    p1["rationale"] = f"{hu} defensive identity slows {du}'s pace. Under + {hu} ML both +EV vs market."
     parlays.append(p1)
 
-    # Parlay 2: Houston ML + Under (Houston slows pace vs Duke)
     p2 = parlay_ev([
-        {"team": "Houston", "label": "Houston ML (+155)", "odds": 155, "win_prob": hu_sf_prob},
-        {"team": "Under", "label": "Duke vs Houston Under 138.5", "odds": -110, "win_prob": 0.58},
+        {"team": az, "label": f"{az} -6.5 vs {mi}", "odds": -110, "win_prob": az_prob * 0.82},
+        {"team": az, "label": f"{az} Championship", "odds": -150, "win_prob": az_champ},
     ])
-    p2["name"] = "Houston Game Parlay"
-    p2["rationale"] = "Houston defensive identity slows Duke's pace. Under + Houston ML both +EV."
+    p2["name"] = f"{az} Two-Leg Parlay"
+    p2["rationale"] = f"{az} covers big vs {mi}, rides to title. Model 54.2% vs market 40% implied."
     parlays.append(p2)
 
-    # Parlay 3: Arizona -6.5 + Championship
-    az_champ = probs["Arizona"]
     p3 = parlay_ev([
-        {"team": "Arizona", "label": "Arizona -6.5 vs Michigan", "odds": -110, "win_prob": 0.61},
-        {"team": "Arizona", "label": "Arizona Championship", "odds": -150, "win_prob": az_champ},
+        {"team": az, "label": f"{az} beats {mi} (SF)", "odds": -300, "win_prob": az_prob},
+        {"team": hu, "label": f"{hu} beats {du} (SF)", "odds": 155, "win_prob": hu_prob},
     ])
-    p3["name"] = "Arizona Two-Leg Parlay"
-    p3["rationale"] = "Arizona covers comfortably vs Michigan then rides to championship. Model prob > implied."
+    p3["name"] = "Final Four Value Parlay"
+    p3["rationale"] = f"Best of both semis. {az} dominant favorite + {hu} underdog edge in one ticket."
     parlays.append(p3)
 
-    # Filter to only +EV parlays
+    upset_opps = [o for o in ev_opps if o["round"] == "Round of 64" and o.get("edge", 0) > 0.05][:2]
+    if len(upset_opps) >= 2:
+        p4 = parlay_ev([
+            {"team": l["team"], "label": f"{l['team']} R64 upset", "odds": l["odds"], "win_prob": l["model_prob"]}
+            for l in upset_opps
+        ])
+        p4["name"] = "R64 Upset Double"
+        p4["rationale"] = "Two model-identified R64 upsets with positive EV each."
+        parlays.append(p4)
+
     parlays = [p for p in parlays if p["is_positive_ev"]]
     parlays.sort(key=lambda x: x["ev_per_dollar"], reverse=True)
     return parlays
 
 
-def check_for_upsets(scores_data: dict):
-    """Detect completed games and update model if upsets occurred."""
-    for game in scores_data.get("games", []):
-        if game.get("status") == "STATUS_FINAL":
-            home = game.get("home")
-            away = game.get("away")
-            if game.get("home_winner"):
-                winner, loser = home, away
-            elif game.get("away_winner"):
-                winner, loser = away, home
-            else:
-                continue
-
-            # Check if this was a tracked team losing
-            if loser in TEAMS and TEAMS[loser].adj_em > -90:
-                apply_result_update(winner, loser)
-                logger.info(f"Result recorded: {winner} over {loser}")
-
-
 def generate_alerts(ev_opps: list[dict], injuries: list[dict]) -> list[dict]:
-    """Generate dashboard alerts for noteworthy situations."""
     alerts = []
-
-    # Strong EV alerts
-    for opp in ev_opps:
-        if opp["edge"] > 0.08:
+    for opp in ev_opps[:5]:
+        if opp["edge"] > 0.06:
             alerts.append({
                 "type": "EV",
                 "severity": "HIGH" if opp["edge"] > 0.12 else "MEDIUM",
-                "message": f"+EV: {opp['team']} {opp['bet_type']} at {opp['odds']:+d} — Edge: {opp['edge']*100:.1f}%",
+                "message": f"+EV: {opp['team']} {opp['bet_type']} ({opp['odds']:+d}) — Edge: +{opp['edge']*100:.1f}%",
                 "team": opp["team"],
             })
-
-    # Injury alerts
     for inj in injuries:
         if inj.get("status", "").upper() in ("OUT", "QUESTIONABLE"):
             alerts.append({
                 "type": "INJURY",
-                "severity": "HIGH" if inj.get("status", "").upper() == "OUT" else "MEDIUM",
-                "message": f"{inj['team']} — {inj['player']} ({inj['position']}): {inj['status']} — {inj.get('detail', '')[:80]}",
+                "severity": "HIGH" if "OUT" in inj.get("status", "").upper() else "MEDIUM",
+                "message": f"INJURY — {inj['team']}: {inj['player']} ({inj['position']}) {inj['status']}: {inj.get('detail','')[:80]}",
                 "team": inj["team"],
             })
-
     return alerts
 
 
 # ─── API Endpoints ────────────────────────────────────────────────────────────
 @app.get("/api/state")
 async def get_state():
-    """Full dashboard state."""
     return JSONResponse(content={
-        **state,
+        **{k: v for k, v in state.items() if k != "bracket_sim"},
         "probabilities": state.get("probabilities") or championship_probabilities(),
+    })
+
+
+@app.get("/api/bracket")
+async def get_bracket():
+    sim = state.get("bracket_sim") or simulate_full_bracket()
+    return JSONResponse(content=sim)
+
+
+@app.get("/api/bracket/region/{region}")
+async def get_region(region: str):
+    from probability_engine import simulate_region
+    sim = state.get("bracket_sim", {})
+    region_sim = sim.get("regions", {}).get(region) or simulate_region(region)
+    teams = get_teams_by_region(region)
+    return JSONResponse(content={"region": region, "teams": teams, "simulation": region_sim})
+
+
+@app.get("/api/bracket/predicted-path")
+async def get_predicted_path():
+    return JSONResponse(content={
+        "predicted_bracket": get_predicted_bracket_path(),
+        "notable_upsets": NOTABLE_UPSETS,
+        "round_schedule": ROUND_INFO,
     })
 
 
 @app.get("/api/probabilities")
 async def get_probabilities():
-    """Current win probabilities for all matchups."""
-    probs = championship_probabilities()
-    return JSONResponse(content=probs)
+    return JSONResponse(content=state.get("probabilities") or championship_probabilities())
 
 
 @app.get("/api/matchup/{team_a}/{team_b}")
 async def get_matchup(team_a: str, team_b: str):
-    """Head-to-head probability for a specific matchup."""
     return JSONResponse(content=win_probability(team_a, team_b))
 
 
 @app.get("/api/ev")
-async def get_ev_opportunities():
-    """Current +EV betting opportunities."""
-    return JSONResponse(content={
-        "opportunities": state.get("ev_opportunities", []),
-        "updated_at": state.get("last_updated"),
-    })
+async def get_ev():
+    return JSONResponse(content={"opportunities": state.get("ev_opportunities", []), "updated_at": state.get("last_updated")})
 
 
 @app.get("/api/parlays")
-async def get_parlays():
-    """Suggested positive-EV parlays."""
-    return JSONResponse(content={
-        "parlays": state.get("parlays", []),
-        "updated_at": state.get("last_updated"),
-    })
+async def get_parlays_ep():
+    return JSONResponse(content={"parlays": state.get("parlays", []), "updated_at": state.get("last_updated")})
 
 
 @app.get("/api/odds")
 async def get_odds():
-    """Current betting lines."""
     return JSONResponse(content=state.get("odds", get_demo_odds()))
 
 
 @app.get("/api/injuries")
 async def get_injuries():
-    """Current injury report."""
     return JSONResponse(content={"injuries": state.get("injuries", get_known_injuries())})
 
 
 @app.get("/api/scores")
 async def get_scores():
-    """Live/recent game scores."""
     return JSONResponse(content=state.get("scores", {"games": []}))
 
 
-@app.post("/api/force-update")
-async def force_update(background_tasks: BackgroundTasks):
-    """Manually trigger a data refresh."""
-    background_tasks.add_task(update_all_data)
-    return JSONResponse(content={"status": "update triggered"})
+@app.get("/api/teams")
+async def get_teams():
+    return JSONResponse(content={"teams": TEAM_DATA, "total": len(TEAM_DATA)})
+
+
+@app.post("/api/result")
+async def post_result(region: str, round_name: str, winner: str, loser: str, score: str = ""):
+    state["results"][region][f"{round_name}_{winner}"] = {
+        "winner": winner, "loser": loser, "score": score, "round": round_name
+    }
+    state["bracket_sim"] = simulate_full_bracket()
+    state["probabilities"] = championship_probabilities()
+    state["ev_opportunities"] = calculate_ev_opportunities(state["odds"])
+    return JSONResponse(content={"status": "result recorded", "updated_probs": state["probabilities"]})
 
 
 @app.post("/api/injury")
-async def add_injury_endpoint(team: str, player: str, description: str, em_impact: float = 0.0):
-    """Manually add an injury to the model."""
+async def post_injury(team: str, player: str, description: str, em_impact: float = 0.0):
     add_injury(team, f"{player}: {description}", em_impact)
+    state["bracket_sim"] = simulate_full_bracket()
     state["probabilities"] = championship_probabilities()
     return JSONResponse(content={"status": "injury added", "new_probs": state["probabilities"]})
 
 
+@app.post("/api/force-update")
+async def force_update(background_tasks: BackgroundTasks):
+    background_tasks.add_task(update_all_data)
+    return JSONResponse(content={"status": "update triggered"})
+
+
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "update_count": state["update_count"], "last_updated": state["last_updated"]}
+    return {"status": "ok", "update_count": state["update_count"], "last_updated": state["last_updated"], "teams": len(TEAM_DATA)}
 
 
-
-# ─── Serve Frontend ───────────────────────────────────────────────────────────
+# ─── Static + Frontend ────────────────────────────────────────────────────────
 app.mount("/static", StaticFiles(directory="static"), name="static")
 
 
 @app.get("/", response_class=HTMLResponse)
 async def serve_dashboard():
-    """Serve the main dashboard HTML."""
     with open("static/index.html", "r") as f:
         return HTMLResponse(content=f.read())
 
