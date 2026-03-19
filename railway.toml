@@ -1,0 +1,15 @@
+[build]
+builder = "DOCKERFILE"
+
+[deploy]
+startCommand = "python app.py"
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 3
+
+[[services]]
+name = "march-madness-dashboard"
+
+[environments.production.variables]
+PORT = "8000"
+# Add your API key in Railway dashboard:
+# ODDS_API_KEY = "your_key_here"

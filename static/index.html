@@ -1,0 +1,1008 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>2026 NCAA March Madness Dashboard</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --surface: #161b22;
+      --surface2: #21262d;
+      --border: #30363d;
+      --text: #e6edf3;
+      --text-muted: #7d8590;
+      --green: #3fb950;
+      --red: #f85149;
+      --yellow: #d29922;
+      --blue: #58a6ff;
+      --purple: #bc8cff;
+      --orange: #ffa657;
+      --az: #003366;
+      --az-accent: #cc0033;
+      --mi: #00274c;
+      --mi-accent: #ffcb05;
+      --du: #003087;
+      --du-accent: #ffffff;
+      --hu: #cc0000;
+      --hu-accent: #ffffff;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      font-size: 14px;
+      line-height: 1.5;
+    }
+    /* ─── Header ─────────────────────────────────────────────── */
+    header {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 12px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    header h1 {
+      font-size: 18px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: -0.3px;
+    }
+    header h1 span { color: var(--blue); }
+    .header-right {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .update-status {
+      font-size: 12px;
+      color: var(--text-muted);
+    }
+    .update-status .dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+      margin-right: 6px;
+      animation: pulse 2s infinite;
+    }
+    .update-status .dot.stale { background: var(--yellow); animation: none; }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: 0.4; }
+    }
+    button.refresh-btn {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 6px 14px;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+      transition: background 0.15s;
+    }
+    button.refresh-btn:hover { background: var(--border); }
+    /* ─── Layout ─────────────────────────────────────────────── */
+    .container {
+      max-width: 1400px;
+      margin: 0 auto;
+      padding: 20px 24px;
+    }
+    .grid {
+      display: grid;
+      gap: 16px;
+    }
+    .grid-2 { grid-template-columns: 1fr 1fr; }
+    .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+    .grid-4 { grid-template-columns: repeat(4, 1fr); }
+    @media (max-width: 1200px) {
+      .grid-4 { grid-template-columns: repeat(2, 1fr); }
+      .grid-3 { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 768px) {
+      .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; }
+    }
+    /* ─── Cards ─────────────────────────────────────────────── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 18px 20px;
+      overflow: hidden;
+    }
+    .card-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .card-title {
+      font-size: 12px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--text-muted);
+    }
+    .card-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-weight: 600;
+    }
+    .badge-live { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+    .badge-demo { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+    .badge-hot  { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+    /* ─── Alerts ─────────────────────────────────────────────── */
+    .alerts-bar {
+      margin-bottom: 16px;
+    }
+    .alert {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      padding: 10px 14px;
+      border-radius: 8px;
+      margin-bottom: 8px;
+      font-size: 13px;
+    }
+    .alert-high { background: rgba(248, 81, 73, 0.1); border: 1px solid rgba(248, 81, 73, 0.3); }
+    .alert-medium { background: rgba(210, 153, 34, 0.1); border: 1px solid rgba(210, 153, 34, 0.3); }
+    .alert-icon { font-size: 16px; flex-shrink: 0; }
+    .alert-text { color: var(--text); }
+    /* ─── Matchup Cards ─────────────────────────────────────── */
+    .matchup-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .matchup-header {
+      background: var(--surface2);
+      padding: 10px 16px;
+      font-size: 11px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--text-muted);
+    }
+    .matchup-body { padding: 16px; }
+    .matchup-teams {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      margin-bottom: 16px;
+    }
+    .matchup-team {
+      flex: 1;
+      padding: 16px;
+      border-radius: 8px;
+      text-align: center;
+    }
+    .matchup-team.favorite { border: 2px solid var(--blue); }
+    .matchup-team.underdog { border: 1px solid var(--border); }
+    .team-name {
+      font-size: 18px;
+      font-weight: 800;
+      letter-spacing: -0.5px;
+      margin-bottom: 4px;
+    }
+    .team-seed { font-size: 11px; color: var(--text-muted); margin-bottom: 10px; }
+    .team-prob {
+      font-size: 32px;
+      font-weight: 900;
+      letter-spacing: -1px;
+    }
+    .prob-label { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .matchup-vs {
+      display: flex;
+      align-items: center;
+      padding: 0 12px;
+      font-size: 18px;
+      font-weight: 900;
+      color: var(--text-muted);
+    }
+    .prob-bar {
+      height: 8px;
+      border-radius: 4px;
+      background: var(--surface2);
+      overflow: hidden;
+      margin-bottom: 12px;
+    }
+    .prob-bar-fill {
+      height: 100%;
+      background: linear-gradient(90deg, var(--blue), var(--purple));
+      border-radius: 4px;
+      transition: width 0.5s ease;
+    }
+    .matchup-stats {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 8px;
+      font-size: 12px;
+    }
+    .stat-row { display: contents; }
+    .stat-val {
+      font-weight: 700;
+      font-size: 13px;
+    }
+    .stat-val.left { text-align: right; }
+    .stat-val.right { text-align: left; }
+    .stat-label {
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 11px;
+      padding: 0 4px;
+    }
+    .stat-val.better { color: var(--green); }
+    .stat-val.worse  { color: var(--red); }
+    /* ─── Championship Probs ─────────────────────────────────── */
+    .champ-teams { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+    .champ-team {
+      text-align: center;
+      padding: 14px 10px;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+      background: var(--surface2);
+      position: relative;
+      overflow: hidden;
+    }
+    .champ-team.leader { border-color: var(--blue); }
+    .champ-team-name { font-size: 15px; font-weight: 800; margin-bottom: 2px; }
+    .champ-team-seed { font-size: 11px; color: var(--text-muted); margin-bottom: 8px; }
+    .champ-prob { font-size: 28px; font-weight: 900; color: var(--blue); }
+    .champ-prob-label { font-size: 10px; color: var(--text-muted); }
+    .champ-odds { font-size: 12px; color: var(--text-muted); margin-top: 6px; }
+    .champ-ev { font-size: 11px; margin-top: 4px; font-weight: 600; }
+    .champ-ev.pos { color: var(--green); }
+    .champ-ev.neg { color: var(--red); }
+    /* ─── EV Table ───────────────────────────────────────────── */
+    .ev-table { width: 100%; border-collapse: collapse; }
+    .ev-table th {
+      text-align: left;
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.7px;
+      padding: 6px 8px;
+      border-bottom: 1px solid var(--border);
+    }
+    .ev-table td {
+      padding: 10px 8px;
+      border-bottom: 1px solid var(--border);
+      font-size: 13px;
+    }
+    .ev-table tr:last-child td { border-bottom: none; }
+    .ev-table tr:hover td { background: var(--surface2); }
+    .ev-badge {
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .ev-badge.strong { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+    .ev-badge.moderate { background: rgba(88, 166, 255, 0.15); color: var(--blue); }
+    .ev-pos { color: var(--green); font-weight: 700; }
+    .ev-neg { color: var(--red); font-weight: 700; }
+    .edge-bar {
+      display: inline-block;
+      height: 6px;
+      border-radius: 3px;
+      background: var(--green);
+      min-width: 4px;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+    /* ─── Parlays ────────────────────────────────────────────── */
+    .parlay-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 10px;
+    }
+    .parlay-card.positive { border-color: var(--green); }
+    .parlay-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    .parlay-name { font-size: 14px; font-weight: 700; }
+    .parlay-payout { font-size: 18px; font-weight: 900; color: var(--green); }
+    .parlay-rationale { font-size: 12px; color: var(--text-muted); margin-bottom: 10px; }
+    .parlay-legs { display: flex; flex-direction: column; gap: 4px; }
+    .parlay-leg {
+      display: flex;
+      justify-content: space-between;
+      font-size: 12px;
+      padding: 4px 8px;
+      background: var(--surface);
+      border-radius: 4px;
+    }
+    .parlay-leg-label { color: var(--text); }
+    .parlay-leg-odds { font-weight: 700; color: var(--orange); }
+    .parlay-stats {
+      display: flex;
+      gap: 16px;
+      margin-top: 10px;
+      font-size: 12px;
+    }
+    .parlay-stat { }
+    .parlay-stat-label { color: var(--text-muted); }
+    .parlay-stat-val { font-weight: 700; }
+    /* ─── Injuries ───────────────────────────────────────────── */
+    .injury-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 10px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .injury-row:last-child { border-bottom: none; }
+    .injury-status {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 2px 8px;
+      border-radius: 4px;
+      flex-shrink: 0;
+      margin-top: 2px;
+    }
+    .status-out { background: rgba(248, 81, 73, 0.15); color: var(--red); }
+    .status-q   { background: rgba(210, 153, 34, 0.15); color: var(--yellow); }
+    .status-ok  { background: rgba(63, 185, 80, 0.15); color: var(--green); }
+    .injury-info { flex: 1; }
+    .injury-player { font-weight: 700; font-size: 13px; }
+    .injury-team { font-size: 11px; color: var(--text-muted); }
+    .injury-detail { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+    /* ─── Odds Table ─────────────────────────────────────────── */
+    .odds-section { margin-bottom: 16px; }
+    .odds-section-title {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 10px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid var(--border);
+    }
+    .odds-grid {
+      display: grid;
+      grid-template-columns: 1fr auto auto auto;
+      gap: 4px 12px;
+      align-items: center;
+      font-size: 13px;
+    }
+    .odds-grid .odds-th {
+      font-size: 11px;
+      color: var(--text-muted);
+      font-weight: 600;
+      padding-bottom: 4px;
+    }
+    .odds-team { font-weight: 600; }
+    .odds-val {
+      text-align: center;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 4px;
+      background: var(--surface2);
+    }
+    .odds-val.best { border: 1px solid var(--green); color: var(--green); }
+    .odds-val.fav  { color: var(--red); }
+    .odds-val.dog  { color: var(--green); }
+    /* ─── Scores ─────────────────────────────────────────────── */
+    .score-card {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 12px 14px;
+      margin-bottom: 8px;
+    }
+    .score-status { font-size: 11px; color: var(--text-muted); margin-bottom: 6px; }
+    .score-teams { display: flex; flex-direction: column; gap: 4px; }
+    .score-team {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 14px;
+    }
+    .score-team.winner .score-team-name { font-weight: 800; }
+    .score-team.winner .score-pts { font-weight: 800; color: var(--text); }
+    .score-pts { font-weight: 600; font-size: 16px; }
+    /* ─── Loader ─────────────────────────────────────────────── */
+    .loading {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 40px;
+      color: var(--text-muted);
+      font-size: 14px;
+    }
+    .spinner {
+      width: 20px; height: 20px;
+      border: 2px solid var(--border);
+      border-top-color: var(--blue);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      margin-right: 10px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    /* ─── Tabs ───────────────────────────────────────────────── */
+    .tabs {
+      display: flex;
+      gap: 2px;
+      margin-bottom: 16px;
+      border-bottom: 1px solid var(--border);
+    }
+    .tab-btn {
+      background: none;
+      border: none;
+      color: var(--text-muted);
+      padding: 8px 16px;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: color 0.15s, border-color 0.15s;
+    }
+    .tab-btn:hover { color: var(--text); }
+    .tab-btn.active { color: var(--blue); border-bottom-color: var(--blue); }
+    .tab-pane { display: none; }
+    .tab-pane.active { display: block; }
+    /* ─── Team Colors ────────────────────────────────────────── */
+    .team-Arizona  { color: #cc0033; }
+    .team-Michigan { color: #ffcb05; }
+    .team-Duke     { color: #7ba7d8; }
+    .team-Houston  { color: #ff6b6b; }
+    /* ─── Misc ───────────────────────────────────────────────── */
+    .no-data { color: var(--text-muted); font-size: 13px; text-align: center; padding: 20px; }
+    .timestamp { font-size: 11px; color: var(--text-muted); }
+    .section-gap { height: 16px; }
+    .full-width { grid-column: 1 / -1; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>2026 NCAA <span>March Madness</span> Dashboard</h1>
+  <div class="header-right">
+    <div class="update-status">
+      <span class="dot" id="live-dot"></span>
+      <span id="update-text">Loading...</span>
+    </div>
+    <button class="refresh-btn" onclick="forceRefresh()">Refresh Now</button>
+  </div>
+</header>
+
+<div class="container">
+  <!-- Alerts -->
+  <div id="alerts-bar" class="alerts-bar"></div>
+
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab-btn active" onclick="switchTab('overview')">Overview</button>
+    <button class="tab-btn" onclick="switchTab('matchups')">Matchup Analysis</button>
+    <button class="tab-btn" onclick="switchTab('betting')">Betting Lines</button>
+    <button class="tab-btn" onclick="switchTab('ev')">+EV Bets</button>
+    <button class="tab-btn" onclick="switchTab('parlays')">Parlays</button>
+    <button class="tab-btn" onclick="switchTab('injuries')">Injuries</button>
+    <button class="tab-btn" onclick="switchTab('scores')">Live Scores</button>
+  </div>
+
+  <!-- ─── OVERVIEW TAB ─────────────────────────────────────── -->
+  <div id="tab-overview" class="tab-pane active">
+    <div class="grid grid-4" style="margin-bottom:16px">
+      <div id="champ-probs-loading" class="card loading full-width">
+        <div class="spinner"></div> Loading probabilities...
+      </div>
+    </div>
+    <div class="grid grid-2">
+      <div id="semi1-card"></div>
+      <div id="semi2-card"></div>
+    </div>
+  </div>
+
+  <!-- ─── MATCHUP TAB ──────────────────────────────────────── -->
+  <div id="tab-matchups" class="tab-pane">
+    <div class="grid grid-2">
+      <div id="matchup-az-mi" class="card"><div class="loading"><div class="spinner"></div></div></div>
+      <div id="matchup-du-hu" class="card"><div class="loading"><div class="spinner"></div></div></div>
+      <div id="matchup-az-du" class="card"><div class="loading"><div class="spinner"></div></div></div>
+      <div id="matchup-az-hu" class="card"><div class="loading"><div class="spinner"></div></div></div>
+    </div>
+  </div>
+
+  <!-- ─── BETTING LINES TAB ────────────────────────────────── -->
+  <div id="tab-betting" class="tab-pane">
+    <div id="betting-content" class="card"><div class="loading"><div class="spinner"></div></div></div>
+  </div>
+
+  <!-- ─── EV TAB ───────────────────────────────────────────── -->
+  <div id="tab-ev" class="tab-pane">
+    <div id="ev-content" class="card"><div class="loading"><div class="spinner"></div></div></div>
+  </div>
+
+  <!-- ─── PARLAYS TAB ──────────────────────────────────────── -->
+  <div id="tab-parlays" class="tab-pane">
+    <div id="parlays-content" class="card"><div class="loading"><div class="spinner"></div></div></div>
+  </div>
+
+  <!-- ─── INJURIES TAB ────────────────────────────────────── -->
+  <div id="tab-injuries" class="tab-pane">
+    <div id="injuries-content" class="card"><div class="loading"><div class="spinner"></div></div></div>
+  </div>
+
+  <!-- ─── SCORES TAB ──────────────────────────────────────── -->
+  <div id="tab-scores" class="tab-pane">
+    <div id="scores-content" class="card"><div class="loading"><div class="spinner"></div></div></div>
+  </div>
+</div>
+
+<script>
+let dashState = null;
+let refreshInterval = null;
+
+// ─── Tab Switching ────────────────────────────────────────────────────────────
+function switchTab(name) {
+  document.querySelectorAll('.tab-btn').forEach((b, i) => {
+    b.classList.toggle('active', b.getAttribute('onclick').includes(name));
+  });
+  document.querySelectorAll('.tab-pane').forEach(p => {
+    p.classList.toggle('active', p.id === `tab-${name}`);
+  });
+}
+
+// ─── Data Fetching ────────────────────────────────────────────────────────────
+async function fetchState() {
+  try {
+    const resp = await fetch('/api/state');
+    const data = await resp.json();
+    dashState = data;
+    renderAll(data);
+    updateStatusBar(data);
+  } catch (e) {
+    console.error('Fetch error:', e);
+    document.getElementById('update-text').textContent = 'Connection error';
+    document.getElementById('live-dot').className = 'dot stale';
+  }
+}
+
+async function forceRefresh() {
+  try {
+    await fetch('/api/force-update', { method: 'POST' });
+    setTimeout(fetchState, 2000);
+  } catch (e) {
+    fetchState();
+  }
+}
+
+function updateStatusBar(data) {
+  const updated = new Date(data.last_updated);
+  const ago = Math.round((Date.now() - updated) / 1000);
+  const dot = document.getElementById('live-dot');
+  const text = document.getElementById('update-text');
+  const isDemo = data.odds?.is_demo;
+
+  if (ago < 180) {
+    dot.className = 'dot';
+    text.textContent = `Live · Updated ${ago}s ago · #${data.update_count}${isDemo ? ' · DEMO ODDS' : ''}`;
+  } else {
+    dot.className = 'dot stale';
+    text.textContent = `Last update: ${updated.toLocaleTimeString()}`;
+  }
+}
+
+// ─── Render All ───────────────────────────────────────────────────────────────
+function renderAll(data) {
+  renderAlerts(data.alerts || []);
+  renderChampProbs(data.probabilities || {});
+  renderMatchups(data.probabilities || {});
+  renderBetting(data.odds || {});
+  renderEV(data.ev_opportunities || []);
+  renderParlays(data.parlays || []);
+  renderInjuries(data.injuries || []);
+  renderScores(data.scores || {});
+}
+
+// ─── Alerts ───────────────────────────────────────────────────────────────────
+function renderAlerts(alerts) {
+  const bar = document.getElementById('alerts-bar');
+  if (!alerts.length) { bar.innerHTML = ''; return; }
+  bar.innerHTML = alerts.slice(0, 3).map(a => `
+    <div class="alert alert-${a.severity.toLowerCase()}">
+      <span class="alert-icon">${a.type === 'EV' ? '💰' : a.type === 'INJURY' ? '🏥' : '⚡'}</span>
+      <span class="alert-text">${a.message}</span>
+    </div>
+  `).join('');
+}
+
+// ─── Championship Probabilities ───────────────────────────────────────────────
+function renderChampProbs(probs) {
+  if (!probs.Arizona) return;
+  const container = document.getElementById('champ-probs-loading').parentElement;
+
+  const teams = [
+    { name: 'Arizona', seed: 1, region: 'East', champOdds: -150 },
+    { name: 'Duke',    seed: 1, region: 'West', champOdds: +200 },
+    { name: 'Houston', seed: 2, region: 'West', champOdds: +380 },
+    { name: 'Michigan',seed: 5, region: 'East', champOdds: +650 },
+  ].sort((a, b) => (probs[b.name] || 0) - (probs[a.name] || 0));
+
+  const maxProb = Math.max(...teams.map(t => probs[t.name] || 0));
+
+  container.innerHTML = `
+    <div class="grid grid-4" style="margin-bottom:16px">
+      ${teams.map((t, i) => {
+        const p = probs[t.name] || 0;
+        const impliedProb = t.champOdds > 0 ? 100 / (t.champOdds + 100) : Math.abs(t.champOdds) / (Math.abs(t.champOdds) + 100);
+        const edge = p - impliedProb;
+        return `
+        <div class="card champ-team ${p === maxProb ? 'leader' : ''}">
+          <div class="champ-team-name team-${t.name}">${t.name}</div>
+          <div class="champ-team-seed">#${t.seed} ${t.region}</div>
+          <div class="champ-prob">${(p * 100).toFixed(1)}%</div>
+          <div class="champ-prob-label">championship probability</div>
+          <div class="champ-odds">Market: ${t.champOdds > 0 ? '+' : ''}${t.champOdds}</div>
+          <div class="champ-ev ${edge > 0 ? 'pos' : 'neg'}">
+            ${edge > 0 ? '▲' : '▼'} Edge: ${edge > 0 ? '+' : ''}${(edge * 100).toFixed(1)}%
+          </div>
+        </div>`;
+      }).join('')}
+    </div>
+    <div class="grid grid-2">
+      <div id="semi1-card"></div>
+      <div id="semi2-card"></div>
+    </div>
+  `;
+
+  renderSemiCard('semi1-card', probs.semi1, 'Semifinal 1 · April 5');
+  renderSemiCard('semi2-card', probs.semi2, 'Semifinal 2 · April 5');
+}
+
+function renderSemiCard(elId, semi, label) {
+  const el = document.getElementById(elId);
+  if (!el || !semi) return;
+  const aProb = (semi.win_prob_a * 100).toFixed(1);
+  const bProb = (semi.win_prob_b * 100).toFixed(1);
+  const [teamA, teamB] = semi.matchup.split(' vs ');
+  el.innerHTML = `
+    <div class="matchup-card">
+      <div class="matchup-header">${label} · ${semi.matchup}</div>
+      <div class="matchup-body">
+        <div class="prob-bar"><div class="prob-bar-fill" style="width:${aProb}%"></div></div>
+        <div class="matchup-teams">
+          <div class="matchup-team ${semi.win_prob_a > 0.5 ? 'favorite' : 'underdog'}">
+            <div class="team-name team-${teamA}">${teamA}</div>
+            <div class="team-seed">Seed #${getSeed(teamA)}</div>
+            <div class="team-prob" style="color: ${semi.win_prob_a > 0.5 ? 'var(--blue)' : 'var(--text-muted)'}">${aProb}%</div>
+            <div class="prob-label">WIN PROB</div>
+          </div>
+          <div class="matchup-vs">vs</div>
+          <div class="matchup-team ${semi.win_prob_b > 0.5 ? 'favorite' : 'underdog'}">
+            <div class="team-name team-${teamB}">${teamB}</div>
+            <div class="team-seed">Seed #${getSeed(teamB)}</div>
+            <div class="team-prob" style="color: ${semi.win_prob_b > 0.5 ? 'var(--blue)' : 'var(--text-muted)'}">${bProb}%</div>
+            <div class="prob-label">WIN PROB</div>
+          </div>
+        </div>
+        <div style="font-size:12px;color:var(--text-muted);margin-top:6px">
+          Projected spread: <strong>${formatSpread(semi.projected_spread, teamA, teamB)}</strong>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+function getSeed(team) {
+  const seeds = { Arizona: 1, Duke: 1, Houston: 2, Michigan: 5 };
+  return seeds[team] || '?';
+}
+
+function formatSpread(spread, teamA, teamB) {
+  if (!spread) return 'Pick\'em';
+  const fav = spread < 0 ? teamA : teamB;
+  return `${fav} -${Math.abs(spread).toFixed(1)}`;
+}
+
+// ─── Matchup Cards ────────────────────────────────────────────────────────────
+async function renderMatchups(probs) {
+  const matchups = [
+    { id: 'matchup-az-mi', a: 'Arizona', b: 'Michigan', label: 'Final Four Semifinal 1' },
+    { id: 'matchup-du-hu', a: 'Duke', b: 'Houston', label: 'Final Four Semifinal 2' },
+    { id: 'matchup-az-du', a: 'Arizona', b: 'Duke', label: 'Potential Championship' },
+    { id: 'matchup-az-hu', a: 'Arizona', b: 'Houston', label: 'Potential Championship' },
+  ];
+
+  for (const m of matchups) {
+    try {
+      const resp = await fetch(`/api/matchup/${m.a}/${m.b}`);
+      const data = await resp.json();
+      renderMatchupCard(m.id, data, m.label);
+    } catch (e) {
+      document.getElementById(m.id).innerHTML = `<div class="no-data">Error loading matchup</div>`;
+    }
+  }
+}
+
+function renderMatchupCard(elId, data, label) {
+  const el = document.getElementById(elId);
+  if (!el || data.error) return;
+  const aProb = (data.win_prob_a * 100).toFixed(1);
+  const bProb = (data.win_prob_b * 100).toFixed(1);
+
+  el.innerHTML = `
+    <div class="card-header">
+      <span class="card-title">${label}</span>
+    </div>
+    <div style="margin-bottom:10px;font-size:16px;font-weight:700">
+      <span class="team-${data.team_a}">${data.team_a}</span>
+      <span style="color:var(--text-muted)"> vs </span>
+      <span class="team-${data.team_b}">${data.team_b}</span>
+    </div>
+    <div class="prob-bar" style="margin-bottom:8px">
+      <div class="prob-bar-fill" style="width:${aProb}%"></div>
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-bottom:14px;font-size:13px">
+      <span><strong style="font-size:18px;color:var(--blue)">${aProb}%</strong> ${data.team_a}</span>
+      <span>${data.team_b} <strong style="font-size:18px;color:var(--text-muted)">${bProb}%</strong></span>
+    </div>
+    <div class="matchup-stats">
+      <span class="stat-val left ${data.effective_em_a > data.effective_em_b ? 'better' : 'worse'}">${data.effective_em_a > 0 ? '+' : ''}${data.effective_em_a}</span>
+      <span class="stat-label">AdjEM</span>
+      <span class="stat-val right ${data.effective_em_b > data.effective_em_a ? 'better' : 'worse'}">${data.effective_em_b > 0 ? '+' : ''}${data.effective_em_b}</span>
+
+      <span class="stat-val left">${data.factors.injury_adj_a !== 0 ? (data.factors.injury_adj_a > 0 ? '+' : '') + data.factors.injury_adj_a : '—'}</span>
+      <span class="stat-label">Inj Adj</span>
+      <span class="stat-val right">${data.factors.injury_adj_b !== 0 ? (data.factors.injury_adj_b > 0 ? '+' : '') + data.factors.injury_adj_b : '—'}</span>
+
+      <span class="stat-val left">${data.factors.consistency_a}</span>
+      <span class="stat-label">Consistency</span>
+      <span class="stat-val right">${data.factors.consistency_b}</span>
+
+      <span class="stat-val left">${data.factors.h2h_adj_a > 0 ? '+' : ''}${data.factors.h2h_adj_a}</span>
+      <span class="stat-label">H2H Adj</span>
+      <span class="stat-val right"></span>
+    </div>
+    <div style="margin-top:12px;font-size:12px;color:var(--text-muted)">
+      Projected spread: <strong style="color:var(--text)">${formatSpread(data.projected_spread, data.team_a, data.team_b)}</strong>
+    </div>
+  `;
+}
+
+// ─── Betting Lines ────────────────────────────────────────────────────────────
+function renderBetting(odds) {
+  const el = document.getElementById('betting-content');
+  const isDemo = odds.is_demo;
+
+  el.innerHTML = `
+    <div class="card-header">
+      <span class="card-title">Betting Lines</span>
+      ${isDemo ? '<span class="card-badge badge-demo">DEMO — Set ODDS_API_KEY for live</span>' : '<span class="card-badge badge-live">LIVE</span>'}
+    </div>
+    ${(odds.events || []).map(e => {
+      const best = e.best_lines || {};
+      const h2h = best.h2h || {};
+      const spread = best.spread || {};
+      const total = best.total || {};
+      return `
+      <div class="odds-section">
+        <div class="odds-section-title">
+          ${e.home} vs ${e.away}
+          ${e.championship ? ' · Championship' : ''}
+          ${e.note ? `<span style="font-size:11px;color:var(--text-muted);font-weight:400"> — ${e.note}</span>` : ''}
+        </div>
+        <div class="odds-grid">
+          <div class="odds-th">Team</div>
+          <div class="odds-th">Moneyline</div>
+          <div class="odds-th">Spread</div>
+          <div class="odds-th">Total</div>
+
+          ${[e.home, e.away].map(team => {
+            if (team === 'TBD') return '';
+            const ml = h2h[team];
+            const sp = spread[team];
+            const mlClass = ml ? (ml < 0 ? 'fav' : 'dog') : '';
+            return `
+            <div class="odds-team team-${team}">${team}</div>
+            <div class="odds-val ${mlClass}">${ml !== undefined ? formatAmerican(ml) : '—'}</div>
+            <div class="odds-val">${sp !== undefined ? (sp > 0 ? '+' : '') + sp : '—'}</div>
+            <div class="odds-val">${total.line ? 'O/U ' + total.line : '—'}</div>`;
+          }).join('')}
+        </div>
+      </div>`;
+    }).join('')}
+    <div class="timestamp">Updated: ${new Date(odds.updated_at || Date.now()).toLocaleTimeString()}</div>
+  `;
+}
+
+function formatAmerican(odds) {
+  return odds > 0 ? `+${odds}` : `${odds}`;
+}
+
+// ─── EV Opportunities ─────────────────────────────────────────────────────────
+function renderEV(opps) {
+  const el = document.getElementById('ev-content');
+  if (!opps.length) {
+    el.innerHTML = `
+      <div class="card-header"><span class="card-title">+EV Bet Finder</span></div>
+      <div class="no-data">No significant +EV opportunities detected with current lines.<br>
+      Configure ODDS_API_KEY for live line tracking.</div>`;
+    return;
+  }
+
+  el.innerHTML = `
+    <div class="card-header">
+      <span class="card-title">+EV Betting Opportunities</span>
+      <span class="card-badge badge-hot">${opps.length} found</span>
+    </div>
+    <table class="ev-table">
+      <thead>
+        <tr>
+          <th>Team</th>
+          <th>Bet Type</th>
+          <th>Odds</th>
+          <th>Model Prob</th>
+          <th>Market Implied</th>
+          <th>Edge</th>
+          <th>EV / $1</th>
+          <th>Kelly %</th>
+          <th>Rating</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${opps.map(o => `
+          <tr>
+            <td class="team-${o.team}" style="font-weight:700">${o.team}</td>
+            <td>${o.bet_type}</td>
+            <td style="font-weight:700;color:${o.odds > 0 ? 'var(--green)' : 'var(--text)'}">${formatAmerican(o.odds)}</td>
+            <td>${(o.model_prob * 100).toFixed(1)}%</td>
+            <td>${(o.implied_prob * 100).toFixed(1)}%</td>
+            <td>
+              <span class="ev-pos">+${(o.edge * 100).toFixed(1)}%</span>
+              <span class="edge-bar" style="width:${Math.min(o.edge * 100 * 4, 60)}px"></span>
+            </td>
+            <td class="ev-pos">+${o.ev_per_dollar.toFixed(3)}</td>
+            <td>${o.kelly_pct.toFixed(1)}%</td>
+            <td><span class="ev-badge ${o.rating.toLowerCase()}">${o.rating}</span></td>
+          </tr>
+        `).join('')}
+      </tbody>
+    </table>
+    <div style="margin-top:14px;font-size:12px;color:var(--text-muted)">
+      ⚠ Kelly % is full Kelly — consider 1/4 Kelly for risk management. Edge = model probability minus implied probability.
+    </div>
+  `;
+}
+
+// ─── Parlays ──────────────────────────────────────────────────────────────────
+function renderParlays(parlays) {
+  const el = document.getElementById('parlays-content');
+
+  el.innerHTML = `
+    <div class="card-header">
+      <span class="card-title">Suggested Parlays (Positive EV)</span>
+      <span class="card-badge badge-live">${parlays.length} parlay${parlays.length !== 1 ? 's' : ''}</span>
+    </div>
+    ${parlays.length === 0 ? '<div class="no-data">No positive-EV parlays with current lines.</div>' : ''}
+    ${parlays.map(p => `
+      <div class="parlay-card positive">
+        <div class="parlay-header">
+          <span class="parlay-name">${p.name}</span>
+          <span class="parlay-payout">+${p.payout_on_100.toFixed(0)} / $100</span>
+        </div>
+        <div class="parlay-rationale">${p.rationale || ''}</div>
+        <div class="parlay-legs">
+          ${(p.legs || []).map(l => `
+            <div class="parlay-leg">
+              <span class="parlay-leg-label">${l.label}</span>
+              <span class="parlay-leg-odds">${l.odds > 0 ? '+' : ''}${l.odds} · ${(l.win_prob * 100).toFixed(1)}%</span>
+            </div>
+          `).join('')}
+        </div>
+        <div class="parlay-stats">
+          <div class="parlay-stat">
+            <span class="parlay-stat-label">Hit Prob: </span>
+            <span class="parlay-stat-val">${(p.combined_prob * 100).toFixed(1)}%</span>
+          </div>
+          <div class="parlay-stat">
+            <span class="parlay-stat-label">Market Implied: </span>
+            <span class="parlay-stat-val">${(p.implied_prob * 100).toFixed(1)}%</span>
+          </div>
+          <div class="parlay-stat">
+            <span class="parlay-stat-label">EV/dollar: </span>
+            <span class="parlay-stat-val ev-pos">+${p.ev_per_dollar.toFixed(3)}</span>
+          </div>
+          <div class="parlay-stat">
+            <span class="parlay-stat-label">Decimal odds: </span>
+            <span class="parlay-stat-val">${p.combined_decimal.toFixed(2)}x</span>
+          </div>
+        </div>
+      </div>
+    `).join('')}
+    <div style="margin-top:14px;font-size:12px;color:var(--text-muted)">
+      Parlays auto-generated from current model vs market lines. Lines marked DEMO until ODDS_API_KEY configured.
+    </div>
+  `;
+}
+
+// ─── Injuries ────────────────────────────────────────────────────────────────
+function renderInjuries(injuries) {
+  const el = document.getElementById('injuries-content');
+  el.innerHTML = `
+    <div class="card-header">
+      <span class="card-title">Injury Report — Final Four Teams</span>
+    </div>
+    ${injuries.length === 0 ? '<div class="no-data">No injury data available.</div>' : ''}
+    ${injuries.map(inj => {
+      const statusMap = {
+        'OUT': 'status-out',
+        'Questionable': 'status-q',
+        'Active': 'status-ok',
+        'QUESTIONABLE': 'status-q',
+      };
+      const cls = statusMap[inj.status] || 'status-q';
+      return `
+      <div class="injury-row">
+        <span class="injury-status ${cls}">${inj.status.toUpperCase()}</span>
+        <div class="injury-info">
+          <div class="injury-player">${inj.player} <span style="color:var(--text-muted);font-weight:400">(${inj.position})</span></div>
+          <div class="injury-team team-${inj.team}">${inj.team}</div>
+          <div class="injury-detail">${inj.detail || ''}</div>
+        </div>
+        ${inj.impact ? `<div style="font-size:12px;font-weight:700;color:${inj.impact < 0 ? 'var(--red)' : 'var(--green)'}">${inj.impact > 0 ? '+' : ''}${inj.impact} pts</div>` : ''}
+      </div>`;
+    }).join('')}
+  `;
+}
+
+// ─── Scores ───────────────────────────────────────────────────────────────────
+function renderScores(scores) {
+  const el = document.getElementById('scores-content');
+  const games = scores.games || [];
+  el.innerHTML = `
+    <div class="card-header">
+      <span class="card-title">Live Scores & Results</span>
+      <span class="card-badge ${games.some(g => g.status === 'STATUS_IN_PROGRESS') ? 'badge-live' : 'badge-demo'}">
+        ${games.some(g => g.status === 'STATUS_IN_PROGRESS') ? 'LIVE' : 'FINAL/PRE'}
+      </span>
+    </div>
+    ${games.length === 0 ? '<div class="no-data">No active tournament games at this time.</div>' : ''}
+    ${games.map(g => `
+      <div class="score-card">
+        <div class="score-status">
+          ${g.status === 'STATUS_IN_PROGRESS' ? `🔴 LIVE · ${g.clock} · ${g.period > 2 ? 'OT' : 'H'}${g.period}` :
+            g.status === 'STATUS_FINAL' ? 'FINAL' :
+            g.date ? new Date(g.date).toLocaleString() : 'Scheduled'}
+          ${g.venue ? ` · ${g.venue}` : ''}
+        </div>
+        <div class="score-teams">
+          <div class="score-team ${g.away_winner ? 'winner' : ''}">
+            <span class="score-team-name team-${g.away}">${g.away}</span>
+            <span class="score-pts">${g.away_score}</span>
+          </div>
+          <div class="score-team ${g.home_winner ? 'winner' : ''}">
+            <span class="score-team-name team-${g.home}">${g.home}</span>
+            <span class="score-pts">${g.home_score}</span>
+          </div>
+        </div>
+      </div>
+    `).join('')}
+  `;
+}
+
+// ─── Auto-refresh ─────────────────────────────────────────────────────────────
+function startAutoRefresh() {
+  refreshInterval = setInterval(fetchState, 30000); // 30s client poll
+}
+
+// ─── Init ─────────────────────────────────────────────────────────────────────
+document.addEventListener('DOMContentLoaded', () => {
+  fetchState();
+  startAutoRefresh();
+});
+</script>
+</body>
+</html>
