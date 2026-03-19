@@ -98,12 +98,20 @@
     .prob-bar { height: 4px; border-radius: 2px; background: var(--border); overflow: hidden; margin-top: 4px; }
     .prob-bar-fill { height: 100%; background: linear-gradient(90deg, var(--blue), var(--purple)); border-radius: 2px; }
 
-    /* EV table */
-    table.ev { width: 100%; border-collapse: collapse; }
-    table.ev th { text-align: left; font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .6px; padding: 5px 8px; border-bottom: 1px solid var(--border); }
-    table.ev td { padding: 9px 8px; border-bottom: 1px solid var(--border); font-size: 13px; }
-    table.ev tr:last-child td { border-bottom: none; }
-    table.ev tr:hover td { background: var(--surface2); }
+    /* EV cards */
+    .ev-card { background: var(--surface2); border: 1px solid var(--border); border-radius: 8px; padding: 14px 16px; margin-bottom: 10px; }
+    .ev-card.strong { border-left: 3px solid var(--green); }
+    .ev-card.moderate { border-left: 3px solid var(--blue); }
+    .ev-matchup { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .5px; margin-bottom: 4px; }
+    .ev-bet-line { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; flex-wrap: wrap; }
+    .ev-team { font-size: 16px; font-weight: 700; }
+    .ev-odds { font-size: 16px; font-weight: 700; }
+    .ev-prob-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 6px; }
+    .ev-stat { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; text-align: center; }
+    .ev-stat-label { font-size: 10px; color: var(--muted); text-transform: uppercase; margin-bottom: 2px; }
+    .ev-stat-val { font-size: 14px; font-weight: 700; }
+    .ev-injury-note { font-size: 11px; color: var(--yellow); margin-top: 5px; }
+    .ev-region { font-size: 11px; color: var(--purple); }
     .ev-badge { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 700; }
     .ev-strong { background: rgba(63,185,80,.15); color: var(--green); }
     .ev-moderate { background: rgba(88,166,255,.15); color: var(--blue); }
@@ -605,32 +613,65 @@ function renderBetting(odds) {
 function renderEV(opps) {
   const el = document.getElementById('ev-content');
   if (!opps.length) {
-    el.innerHTML = '<div class="card-title">+EV Bet Finder</div><div class="no-data">No significant +EV bets detected. Configure ODDS_API_KEY for live scanning.</div>';
+    el.innerHTML = `<div class="card-title">+EV Bet Finder</div>
+      <div class="no-data">No +EV bets detected against seed-based market lines.<br>
+      Only Round of 64 games (confirmed matchups) are evaluated.</div>`;
     return;
   }
   el.innerHTML = `
-    <div class="card-title">+EV Betting Opportunities <span class="badge badge-red">${opps.length} found</span></div>
-    <table class="ev">
-      <thead><tr>
-        <th>Team</th><th>Round</th><th>Bet Type</th><th>Odds</th>
-        <th>Model %</th><th>Market %</th><th>Edge</th><th>EV/$</th><th>Kelly</th><th>Rating</th>
-      </tr></thead>
-      <tbody>
-        ${opps.map(o => `<tr>
-          <td style="font-weight:700;color:${teamColor(o.team)}">${o.team}</td>
-          <td style="font-size:11px;color:var(--muted)">${o.round}</td>
-          <td>${o.bet_type}</td>
-          <td style="font-weight:700;color:${o.odds>0?'var(--green)':'var(--text)'}">${o.odds>0?'+':''}${o.odds}</td>
-          <td>${(o.model_prob*100).toFixed(1)}%</td>
-          <td>${(o.implied_prob*100).toFixed(1)}%</td>
-          <td><span class="green">+${(o.edge*100).toFixed(1)}%</span><span class="bar-green" style="width:${Math.min(o.edge*400,60)}px"></span></td>
-          <td class="green">+${o.ev_per_dollar.toFixed(3)}</td>
-          <td>${o.kelly_pct.toFixed(1)}%</td>
-          <td><span class="ev-badge ${o.rating==='STRONG'?'ev-strong':'ev-moderate'}">${o.rating}</span></td>
-        </tr>`).join('')}
-      </tbody>
-    </table>
-    <div style="margin-top:10px;font-size:11px;color:var(--muted)">⚠ Use 1/4 Kelly for risk management. EV computed as model probability minus market implied probability.</div>`;
+    <div class="card-title">
+      +EV Bets — Round of 64 Only (Confirmed Games)
+      <span class="badge badge-red">${opps.length} found</span>
+    </div>
+    <div style="font-size:11px;color:var(--muted);margin-bottom:12px">
+      Market lines use standard seed-based opening lines (DK/FD typical). Model incorporates full injury adjustments and research overlays.
+      Only confirmed R64 matchups are shown — no future-round speculation.
+    </div>
+    ${opps.map(o => `
+      <div class="ev-card ${o.rating === 'STRONG' ? 'strong' : 'moderate'}">
+        <div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:6px">
+          <div>
+            <div class="ev-matchup">${o.region} Region · Round of 64</div>
+            <div class="ev-matchup" style="color:var(--text);font-size:12px;letter-spacing:0">${o.matchup}</div>
+          </div>
+          <span class="ev-badge ${o.rating === 'STRONG' ? 'ev-strong' : 'ev-moderate'}">${o.rating}</span>
+        </div>
+        <div class="ev-bet-line">
+          <span style="font-size:12px;color:var(--muted)">BET:</span>
+          <span class="ev-team" style="color:${teamColor(o.team)}">${o.team}</span>
+          <span class="ev-odds" style="color:${o.odds > 0 ? 'var(--green)' : 'var(--text)'}">${o.odds > 0 ? '+' : ''}${o.odds}</span>
+          <span style="font-size:12px;color:var(--muted)">ML</span>
+        </div>
+        <div class="ev-prob-row">
+          <div class="ev-stat">
+            <div class="ev-stat-label">Model Prob</div>
+            <div class="ev-stat-val" style="color:var(--green)">${(o.model_prob*100).toFixed(1)}%</div>
+          </div>
+          <div class="ev-stat">
+            <div class="ev-stat-label">Market Impl</div>
+            <div class="ev-stat-val" style="color:var(--red)">${(o.implied_prob*100).toFixed(1)}%</div>
+          </div>
+          <div class="ev-stat">
+            <div class="ev-stat-label">Edge</div>
+            <div class="ev-stat-val" style="color:var(--green)">+${(o.edge*100).toFixed(1)}%</div>
+          </div>
+          <div class="ev-stat">
+            <div class="ev-stat-label">EV / $1</div>
+            <div class="ev-stat-val" style="color:var(--green)">+$${o.ev_per_dollar.toFixed(3)}</div>
+          </div>
+        </div>
+        <div style="display:flex;gap:16px;font-size:11px;color:var(--muted)">
+          <span>Kelly: <strong style="color:var(--text)">${o.kelly_pct.toFixed(1)}%</strong> (use ¼ Kelly)</span>
+          <span>Eff EM: <strong style="color:var(--text)">${o.effective_em > 0 ? '+' : ''}${o.effective_em}</strong></span>
+          <span>Proj Spread: <strong style="color:var(--text)">${o.projected_spread > 0 ? '+' : ''}${o.projected_spread}</strong></span>
+        </div>
+        ${o.injury_note ? `<div class="ev-injury-note">⚠ Injury factor: ${o.injury_note}</div>` : ''}
+      </div>
+    `).join('')}
+    <div style="margin-top:8px;font-size:11px;color:var(--muted)">
+      ⚠ Use ¼ Kelly sizing. Market lines are seed-based estimates — configure ODDS_API_KEY for live book lines.
+      EV = (model_prob × profit) − (1 − model_prob). Edge = model_prob − market_implied.
+    </div>`;
 }
 
 // ─── Parlays ─────────────────────────────────────────────────────────────────

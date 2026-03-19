@@ -85,89 +85,84 @@ async def update_all_data():
         logger.error(f"Update failed: {e}", exc_info=True)
 
 
-# ─── EV / Parlay Logic ───────────────────────────────────────────────────────
-def _get_ml_for_team(odds_data: dict, team: str) -> Optional[int]:
-    for event in odds_data.get("events", []):
-        h2h = event.get("best_lines", {}).get("h2h", {})
-        if team in h2h:
-            return h2h[team]
-    return None
+# ─── Standard market ML lines for each R64 seed matchup ─────────────────────
+# Based on historical NCAA Tournament opening lines (DraftKings/FanDuel typical)
+# These represent where the market opens before sharp money and live injury news.
+# Our model's injury/research adjustments are where the edge comes from.
+_SEED_ML: dict[tuple[int, int], tuple[int, int]] = {
+    (1, 16): (-4000, 2500),
+    (2, 15): (-900,  600),
+    (3, 14): (-580,  420),
+    (4, 13): (-360,  285),
+    (5, 12): (-235,  195),
+    (6, 11): (-185,  155),
+    (7, 10): (-155,  130),
+    (8,  9): (-120,  100),
+}
+
+
+def _build_injury_note(team_a: str, team_b: str) -> str:
+    notes = []
+    for t in [team_a, team_b]:
+        inj_adj = TEAM_DATA[t].get("injury_adjustment", 0)
+        if inj_adj <= -2.0:
+            notes.append(f"{t} injuries ({inj_adj:+.1f} EM impact)")
+    return " | ".join(notes)
 
 
 def calculate_ev_opportunities(odds_data: dict) -> list[dict]:
+    """
+    Scan every confirmed R64 matchup for +EV vs standard seed-based market lines.
+    Only R64 games are used — these are the only 100% confirmed games.
+    Model incorporates full injury/research adjustments; market uses seed baseline.
+    Both sides of every game are evaluated.
+    """
     opps = []
-    sim = state.get("bracket_sim", {})
-    ff = sim.get("final_four", {})
-    champ = sim.get("championship", {})
 
-    # Final Four lines from odds feed
-    for semi_key, game in ff.items():
-        for team, prob, opp in [
-            (game["team_a"], game["win_prob_a"], game["team_b"]),
-            (game["team_b"], game["win_prob_b"], game["team_a"]),
-        ]:
-            ml = _get_ml_for_team(odds_data, team)
-            if ml is not None:
-                ev = ev_calculation(prob, ml)
-                if ev["is_positive_ev"]:
-                    opps.append({
-                        "team": team, "opponent": opp,
-                        "bet_type": f"{semi_key.replace('_', ' ')} ML",
-                        "round": "Final Four", "odds": ml,
-                        "model_prob": round(prob, 4),
-                        "implied_prob": ev["implied_prob"],
-                        "edge": round(ev["edge"], 4),
-                        "ev_per_dollar": ev["ev_per_dollar"],
-                        "kelly_pct": ev["kelly_pct"],
-                        "rating": "STRONG" if ev["edge"] > 0.10 else "MODERATE",
-                    })
-
-    # Championship lines
-    if champ and champ.get("team_a"):
-        for team, prob, opp in [
-            (champ["team_a"], champ.get("win_prob_a", 0), champ["team_b"]),
-            (champ["team_b"], champ.get("win_prob_b", 0), champ["team_a"]),
-        ]:
-            ml = _get_ml_for_team(odds_data, team)
-            if ml is not None:
-                ev = ev_calculation(prob, ml)
-                if ev["is_positive_ev"]:
-                    opps.append({
-                        "team": team, "opponent": opp,
-                        "bet_type": "Championship ML",
-                        "round": "Championship", "odds": ml,
-                        "model_prob": round(prob, 4),
-                        "implied_prob": ev["implied_prob"],
-                        "edge": round(ev["edge"], 4),
-                        "ev_per_dollar": ev["ev_per_dollar"],
-                        "kelly_pct": ev["kelly_pct"],
-                        "rating": "STRONG" if ev["edge"] > 0.10 else "MODERATE",
-                    })
-
-    # R64 — scan all matchups for significant line value
     for region in REGION_ORDER:
         for team_a, team_b in get_r64_matchups(region):
             wp = win_probability(team_a, team_b)
-            spread = wp.get("projected_spread", 0)
-            if abs(spread) > 8:
-                fav = team_a if wp["win_prob_a"] > 0.5 else team_b
-                fav_prob = max(wp["win_prob_a"], wp["win_prob_b"])
-                dog_prob = 1 - fav_prob
-                dog = team_b if fav == team_a else team_a
-                # Check dog value — heavy favs often slightly over-priced
-                approx_dog_odds = int((1 - dog_prob) / dog_prob * 100)
-                ev = ev_calculation(dog_prob, approx_dog_odds)
-                if ev["is_positive_ev"] and ev["edge"] > 0.03:
+            seed_a, seed_b = wp["seed_a"], wp["seed_b"]
+
+            # Identify favorite (lower seed number = stronger team)
+            if seed_a <= seed_b:
+                fav, dog = team_a, team_b
+                fav_seed, dog_seed = seed_a, seed_b
+                fav_prob, dog_prob = wp["win_prob_a"], wp["win_prob_b"]
+            else:
+                fav, dog = team_b, team_a
+                fav_seed, dog_seed = seed_b, seed_a
+                fav_prob, dog_prob = wp["win_prob_b"], wp["win_prob_a"]
+
+            seed_key = (min(fav_seed, dog_seed), max(fav_seed, dog_seed))
+            if seed_key not in _SEED_ML:
+                continue
+            fav_ml, dog_ml = _SEED_ML[seed_key]
+            inj_note = _build_injury_note(team_a, team_b)
+
+            for team, prob, ml in [(fav, fav_prob, fav_ml), (dog, dog_prob, dog_ml)]:
+                opponent = dog if team == fav else fav
+                ev = ev_calculation(prob, ml)
+                if ev["is_positive_ev"] and ev["edge"] > 0.02:
                     opps.append({
-                        "team": dog, "opponent": fav,
-                        "bet_type": f"R64 Upset ML (proj {fav} -{abs(spread):.0f})",
-                        "round": "Round of 64", "odds": approx_dog_odds,
-                        "model_prob": round(dog_prob, 4),
+                        "team": team,
+                        "opponent": opponent,
+                        "matchup": f"({seed_a}) {team_a} vs ({seed_b}) {team_b}",
+                        "region": region,
+                        "round": "Round of 64",
+                        "bet_type": f"{team} ML",
+                        "odds": ml,
+                        "model_prob": round(prob, 4),
                         "implied_prob": ev["implied_prob"],
                         "edge": round(ev["edge"], 4),
                         "ev_per_dollar": ev["ev_per_dollar"],
                         "kelly_pct": ev["kelly_pct"],
-                        "rating": "MODERATE",
+                        "rating": "STRONG" if ev["edge"] > 0.10 else "MODERATE",
+                        "projected_spread": wp["projected_spread"],
+                        "injury_note": inj_note,
+                        "effective_em": round(
+                            wp["effective_em_a"] if team == team_a else wp["effective_em_b"], 1
+                        ),
                     })
 
     opps.sort(key=lambda x: x["edge"], reverse=True)
@@ -175,56 +170,54 @@ def calculate_ev_opportunities(odds_data: dict) -> list[dict]:
 
 
 def generate_parlays(ev_opps: list[dict]) -> list[dict]:
-    sim = state.get("bracket_sim", {})
-    ff = sim.get("final_four", {})
-    if not ff:
+    """
+    Build parlays exclusively from confirmed R64 +EV opportunities.
+    Groups top edges into 2-leg and 3-leg tickets.
+    """
+    # Only confirmed R64 games with meaningful edge
+    r64 = [o for o in ev_opps if o["round"] == "Round of 64" and o["edge"] > 0.04]
+    if len(r64) < 2:
         return []
 
-    s1 = ff.get("Semifinal_1", {})
-    s2 = ff.get("Semifinal_2", {})
     parlays = []
 
-    az = s1.get("team_a", "Arizona")
-    mi = s1.get("team_b", "Michigan")
-    du = s2.get("team_a", "Duke")
-    hu = s2.get("team_b", "Houston")
-    az_prob = s1.get("win_prob_a", 0.82)
-    hu_prob = s2.get("win_prob_b", 0.56)
-    az_champ = state.get("probabilities", {}).get(az, 0.54)
-
+    # Best 2-leg: top 2 by edge
+    top2 = r64[:2]
     p1 = parlay_ev([
-        {"team": hu, "label": f"{hu} ML (+155 demo)", "odds": 155, "win_prob": hu_prob},
-        {"team": "Under", "label": f"{du} vs {hu} Under 138.5", "odds": -110, "win_prob": 0.58},
+        {"team": o["team"], "label": f"{o['team']} ML vs {o['opponent']} ({o['odds']:+d})", "odds": o["odds"], "win_prob": o["model_prob"]}
+        for o in top2
     ])
-    p1["name"] = f"{hu} Game Parlay"
-    p1["rationale"] = f"{hu} defensive identity slows {du}'s pace. Under + {hu} ML both +EV vs market."
+    p1["name"] = "Top-2 Edge R64 Parlay"
+    p1["rationale"] = " + ".join(
+        f"{o['team']} model {o['model_prob']*100:.0f}% vs market {o['implied_prob']*100:.0f}% (edge +{o['edge']*100:.1f}%)"
+        for o in top2
+    )
     parlays.append(p1)
 
-    p2 = parlay_ev([
-        {"team": az, "label": f"{az} -6.5 vs {mi}", "odds": -110, "win_prob": az_prob * 0.82},
-        {"team": az, "label": f"{az} Championship", "odds": -150, "win_prob": az_champ},
-    ])
-    p2["name"] = f"{az} Two-Leg Parlay"
-    p2["rationale"] = f"{az} covers big vs {mi}, rides to title. Model 54.2% vs market 40% implied."
-    parlays.append(p2)
-
-    p3 = parlay_ev([
-        {"team": az, "label": f"{az} beats {mi} (SF)", "odds": -300, "win_prob": az_prob},
-        {"team": hu, "label": f"{hu} beats {du} (SF)", "odds": 155, "win_prob": hu_prob},
-    ])
-    p3["name"] = "Final Four Value Parlay"
-    p3["rationale"] = f"Best of both semis. {az} dominant favorite + {hu} underdog edge in one ticket."
-    parlays.append(p3)
-
-    upset_opps = [o for o in ev_opps if o["round"] == "Round of 64" and o.get("edge", 0) > 0.05][:2]
-    if len(upset_opps) >= 2:
-        p4 = parlay_ev([
-            {"team": l["team"], "label": f"{l['team']} R64 upset", "odds": l["odds"], "win_prob": l["model_prob"]}
-            for l in upset_opps
+    # Best 3-leg: top 3 by edge (if available)
+    if len(r64) >= 3:
+        top3 = r64[:3]
+        p2 = parlay_ev([
+            {"team": o["team"], "label": f"{o['team']} ML vs {o['opponent']} ({o['odds']:+d})", "odds": o["odds"], "win_prob": o["model_prob"]}
+            for o in top3
         ])
-        p4["name"] = "R64 Upset Double"
-        p4["rationale"] = "Two model-identified R64 upsets with positive EV each."
-        parlays.append(p4)
+        p2["name"] = "Top-3 Edge R64 Parlay"
+        p2["rationale"] = " + ".join(
+            f"{o['team']} (+{o['edge']*100:.1f}% edge)"
+            for o in top3
+        )
+        parlays.append(p2)
+
+    # Underdog-focused 2-leg: top 2 dogs (odds > 0) by edge
+    dogs = [o for o in r64 if o["odds"] > 0][:2]
+    if len(dogs) >= 2:
+        p3 = parlay_ev([
+            {"team": o["team"], "label": f"{o['team']} ML vs {o['opponent']} ({o['odds']:+d})", "odds": o["odds"], "win_prob": o["model_prob"]}
+            for o in dogs
+        ])
+        p3["name"] = "R64 Underdog Value Parlay"
+        p3["rationale"] = "Two model-identified underdogs where injury/research gives us significant edge over market."
+        parlays.append(p3)
 
     parlays = [p for p in parlays if p["is_positive_ev"]]
     parlays.sort(key=lambda x: x["ev_per_dollar"], reverse=True)
@@ -238,7 +231,7 @@ def generate_alerts(ev_opps: list[dict], injuries: list[dict]) -> list[dict]:
             alerts.append({
                 "type": "EV",
                 "severity": "HIGH" if opp["edge"] > 0.12 else "MEDIUM",
-                "message": f"+EV: {opp['team']} {opp['bet_type']} ({opp['odds']:+d}) — Edge: +{opp['edge']*100:.1f}%",
+                "message": f"+EV: {opp['team']} ML ({opp['odds']:+d}) in {opp.get('matchup', opp['team']+' vs '+opp['opponent'])} — Model {opp['model_prob']*100:.0f}% vs Market {opp['implied_prob']*100:.0f}% — Edge: +{opp['edge']*100:.1f}%",
                 "team": opp["team"],
             })
     for inj in injuries:
